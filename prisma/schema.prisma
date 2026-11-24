@@ -1,0 +1,230 @@
+// SBS Academy — schéma de base de données
+// Rôles : ADMIN (contrôle total, crée les accès) / TEACHER / STUDENT
+// SQLite ne supporte pas les enums Prisma : les champs "type" sont des String
+// validés côté application (voir src/lib/constants.ts).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- Utilisateurs
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  // ADMIN | TEACHER | STUDENT
+  role         String
+  isActive     Boolean @default(true)
+  // Forcer le changement du mot de passe fourni par l'admin
+  mustChangePassword Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Élève
+  enrollments     Enrollment[]
+  submissions     Submission[]     @relation("StudentSubmissions")
+  chapterProgress ChapterProgress[]
+
+  // Professeur
+  coursesTaught Course[]     @relation("CourseTeacher")
+  graded        Submission[] @relation("GradedBy")
+
+  @@index([role])
+}
+
+// ---------------------------------------------------------------- Cycles / formations
+
+model Program {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  enrollments Enrollment[]
+  courses     Course[]
+}
+
+model Enrollment {
+  id        String @id @default(cuid())
+  studentId String
+  programId String
+
+  createdAt DateTime @default(now())
+
+  student User    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  program Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, programId])
+  @@index([programId])
+}
+
+// ---------------------------------------------------------------- Cours
+
+model Course {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+  teacherId   String
+  programId   String
+  isPublished Boolean @default(false)
+  position    Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  teacher  User      @relation("CourseTeacher", fields: [teacherId], references: [id], onDelete: Cascade)
+  program  Program   @relation(fields: [programId], references: [id], onDelete: Cascade)
+  chapters Chapter[]
+  exams    Exam[]
+
+  @@index([teacherId])
+  @@index([programId])
+}
+
+model Chapter {
+  id          String  @id @default(cuid())
+  courseId    String
+  title       String
+  content     String  @default("")
+  position    Int     @default(0)
+  isPublished Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  course   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  // Un exercice obligatoire par chapitre
+  exercise Exercise?
+  progress ChapterProgress[]
+
+  @@index([courseId])
+}
+
+model ChapterProgress {
+  id          String   @id @default(cuid())
+  studentId   String
+  chapterId   String
+  completedAt DateTime @default(now())
+
+  student User    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  chapter Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, chapterId])
+  @@index([chapterId])
+}
+
+// ---------------------------------------------------------------- Évaluations
+
+model Exercise {
+  id           String  @id @default(cuid())
+  chapterId    String  @unique
+  title        String
+  instructions String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chapter     Chapter      @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  questions   Question[]
+  submissions Submission[]
+}
+
+model Exam {
+  id           String  @id @default(cuid())
+  courseId     String
+  title        String
+  instructions String?
+  // 1, 2 ou 3 — maximum 3 examens par cours
+  position     Int
+  isPublished  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  course      Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  questions   Question[]
+  submissions Submission[]
+
+  @@unique([courseId, position])
+  @@index([courseId])
+}
+
+model Question {
+  id         String  @id @default(cuid())
+  exerciseId String?
+  examId     String?
+  // YES_NO | MCQ | TEXT
+  type       String
+  prompt     String
+  // JSON : liste des options pour les QCM
+  optionsJson String @default("[]")
+  // Réponse attendue (QCM : index ; OUI/NON : "true"/"false" ; TEXT : null = correction manuelle)
+  correctAnswer String?
+  points     Int     @default(1)
+  position   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  exercise Exercise? @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+  exam     Exam?     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  answers  Answer[]
+
+  @@index([exerciseId])
+  @@index([examId])
+}
+
+model Submission {
+  id         String  @id @default(cuid())
+  studentId  String
+  exerciseId String?
+  examId     String?
+  // SUBMITTED | GRADED  (GRADED = note définitive, correction manuelle terminée)
+  status     String  @default("SUBMITTED")
+  score      Float   @default(0)
+  maxScore   Float   @default(0)
+  // true tant qu'une question en texte libre attend la correction du professeur
+  needsManualGrading Boolean @default(false)
+  feedback   String?
+
+  submittedAt DateTime  @default(now())
+  gradedAt    DateTime?
+  gradedById  String?
+
+  student  User      @relation("StudentSubmissions", fields: [studentId], references: [id], onDelete: Cascade)
+  gradedBy User?     @relation("GradedBy", fields: [gradedById], references: [id], onDelete: SetNull)
+  exercise Exercise? @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+  exam     Exam?     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  answers  Answer[]
+
+  @@unique([studentId, exerciseId])
+  @@unique([studentId, examId])
+  @@index([studentId])
+}
+
+model Answer {
+  id            String  @id @default(cuid())
+  submissionId  String
+  questionId    String
+  value         String  @default("")
+  isCorrect     Boolean?
+  pointsAwarded Float   @default(0)
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question   Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, questionId])
+  @@index([questionId])
+}
